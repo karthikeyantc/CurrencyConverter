@@ -42,10 +42,39 @@ GET /convert?sourceCurrency=USD&targetCurrency=INR&amount=100
 }
 ```
 
-**Error response (400):**
+**Quick verification (PowerShell):**
+
+```powershell
+# Success
+Invoke-RestMethod "http://localhost:5138/convert?sourceCurrency=USD&targetCurrency=INR&amount=100"
+
+# Same currency
+Invoke-RestMethod "http://localhost:5138/convert?sourceCurrency=USD&targetCurrency=USD&amount=100"
+
+# Unsupported currency
+Invoke-RestMethod "http://localhost:5138/convert?sourceCurrency=XYZ&targetCurrency=INR&amount=100"
+
+# Missing parameter
+Invoke-RestMethod "http://localhost:5138/convert?targetCurrency=INR&amount=100"
+
+# Invalid amount
+Invoke-RestMethod "http://localhost:5138/convert?sourceCurrency=USD&targetCurrency=INR&amount=-5"
+```
+
+**Error responses (400):**
+
+| Scenario | Message |
+|---|---|
+| Missing `sourceCurrency` or `targetCurrency` | `sourceCurrency is required.` / `targetCurrency is required.` |
+| Currency code not exactly 3 characters | `sourceCurrency must be a 3-letter ISO 4217 code.` |
+| `amount` is zero or negative | `amount must be greater than zero.` |
+| Source and target are the same | `Source and target currencies must be different.` |
+| Unsupported currency pair | `Conversion rate from XYZ to INR not found.` |
+
+All 400 responses use the same JSON envelope:
 ```json
 {
-  "message": "Source and target currencies must be different."
+  "message": "<description of the problem>"
 }
 ```
 
@@ -112,8 +141,59 @@ dotnet test CurrencyConverter.Tests/CurrencyConverter.Tests.csproj
 └── README.md
 ```
 
+## Architecture
+
+### Request Flow
+
+```
+HTTP Request
+    │
+    ▼
+ExceptionMiddleware          ← catches all unhandled exceptions
+    │
+    ▼
+CurrencyController           ← validates input via DataAnnotations ([ApiController])
+    │                           logs incoming request
+    ▼
+CurrencyConversionService    ← domain guards (same currency, amount > 0)
+    │                           looks up rate, rounds result, logs conversion
+    ▼
+IOptionsMonitor<ExchangeRates>  ← always reads latest rates (supports hot-reload)
+    │
+    ▼
+HTTP Response
+```
+
+### Configuration Pipeline
+
+Exchange rates are resolved in this order (later sources win):
+
+```
+exchangeRates.json
+    └─▶ Environment variables (flat key, e.g. USD_TO_INR=85.00)
+            └─▶ PostConfigure override (applied last, highest precedence)
+```
+
+### Error Handling
+
+```
+ArgumentException  ──▶  ExceptionMiddleware  ──▶  400 Bad Request
+Any other exception ──▶  ExceptionMiddleware  ──▶  500 Internal Server Error
+Invalid query params ──▶ [ApiController] auto ──▶  400 ValidationProblemDetails
+```
+
+### Layers
+
+| Layer | Responsibility |
+|---|---|
+| `Controllers/` | HTTP binding, input validation, logging |
+| `Services/` | Domain logic, rate lookup, conversion |
+| `Middleware/` | Cross-cutting error handling |
+| `Model/` | DTOs and configuration models |
+| `Configuration/` | Exchange rate data file |
+
 ## Design Decisions
 
 - **`IOptionsMonitor` over `IOptions`**: `CurrentValue` is re-read on every call, so file changes are picked up instantly — this is how dynamic reload works with zero extra code.
 - **`PostConfigure` for env var overrides**: The flat key format (`USD_TO_INR`) required by the spec isn't natively supported by ASP.NET Core's configuration pipeline (which uses double-underscore separators). A `PostConfigure` action reads env vars by key after JSON binding, giving the correct precedence.
-- **Controller handles `ArgumentException` → 400, middleware handles everything else → 500**: Keeps domain errors close to where they're understood, while unexpected exceptions are caught once at the boundary.
+- **Middleware owns all error mapping**: `ExceptionMiddleware` catches `ArgumentException` → 400 and everything else → 500. The controller stays clean — no try/catch, just service call and `Ok`. This avoids duplicating error-handling logic across controllers as the API grows.
