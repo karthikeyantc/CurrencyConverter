@@ -1,3 +1,4 @@
+using CurrencyConverter.Model;
 using CurrencyConverter.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 
@@ -17,19 +18,17 @@ namespace CurrencyConverter.Controllers
         }
 
         [HttpGet]
-        public IActionResult Convert(string sourceCurrency, string targetCurrency, decimal amount)
+        public IActionResult Convert([FromQuery] ConversionRequest request)
         {
             _logger.LogInformation("Received conversion request: {Amount} from {Source} to {Target}",
-                amount, sourceCurrency, targetCurrency);
+                request.Amount, request.SourceCurrency, request.TargetCurrency);
 
-            // Call the conversion service to perform the currency conversion
-            var result = _conversionService.Convert(sourceCurrency, targetCurrency, amount);
+            var result = _conversionService.Convert(request.SourceCurrency, request.TargetCurrency, request.Amount);
 
             _logger.LogInformation("Conversion result: {Amount} from {Source} to {Target} is {Result}",
-                amount, sourceCurrency, targetCurrency, result.ConvertedAmount);
-            // Return the conversion result as a JSON response
-            return Ok(result);
+                request.Amount, request.SourceCurrency, request.TargetCurrency, result.ConvertedAmount);
 
+            return Ok(result);
         }
     }
 }
